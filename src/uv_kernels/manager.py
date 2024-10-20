@@ -3,29 +3,23 @@ import os
 import logging
 import queue
 import re
-import sys
 import typing as t
 import tomllib
 import threading
 
 from jupyter_client.kernelspec import KernelSpec, KernelSpecManager
-from traitlets import Bool
+from traitlets import Bool, List
 
 from pathlib import Path
 
 
 _logger = logging.getLogger(__name__)
 
-_MOCK = [
-    Path("~/ryes/uvkernel1").expanduser(),
-    Path("~/ryes/uvkernel2").expanduser(),
-]
 
-_BASE_DIRS = [Path("~/ryes").expanduser(), Path("~/proj").expanduser()]
 _PREFIX = "uv_kernel_"
 _PYPROJ = "pyproject.toml"
 
-# everything starting with . as well
+# ignore directories with '.' prefix and anything in this set
 _IGNORE_LIST = {"node_modules"}
 
 _BASE_SPEC = {
@@ -43,6 +37,23 @@ class UvKernel:
     # pyproject file
     project: Path
 
+    def directory(self) -> Path:
+        return self.project.parent
+
+    def kernel_name(self) -> str:
+        home = Path("~").expanduser()
+        try:
+            path = self.directory().relative_to(home)
+        except ValueError:
+            path = self.directory()
+        return _PREFIX + "_".join(path.parts)
+
+    def display_name(self) -> str:
+        return "/".join(self.directory().parts[-2:])
+
+    def python_path(self) -> str:
+        return str(self.directory() / ".venv/bin/python")
+
 
 def get_dotkey(data: dict, dotkey, default):
     parts = dotkey.split(".")
@@ -55,11 +66,11 @@ def get_dotkey(data: dict, dotkey, default):
     return root
 
 def is_kernel_project(pyproject_file: Path) -> bool:
+    _logger.debug("Scanning file %r", pyproject_file)
     try:
         with open(pyproject_file, "rb") as file:
             data = tomllib.load(file)
         deps = get_dotkey(data, "project.dependencies", [])
-        print(pyproject_file.parent.name, deps)
         for dep in deps:
             if re.match(r"\bipykernel\b", dep) is not None:
                 return True
@@ -69,15 +80,16 @@ def is_kernel_project(pyproject_file: Path) -> bool:
         return False
 
 def has_venv(pyproject_file: Path) -> bool:
-    venv_dir = pyproject_file.parent / ".venv"
-    return venv_dir.is_dir()
+    venv_dir = pyproject_file.parent / ".venv/bin/python"
+    return venv_dir.is_file()
 
 
 class ProjectScanner:
-    def __init__(self):
+    def __init__(self, base_directories: list[str]):
         self.queue = queue.Queue()
         self.kernels = []
         self.started = False
+        self.base_directories = base_directories
         self._thread = None
 
     def start(self):
@@ -87,16 +99,17 @@ class ProjectScanner:
             self.started = True
 
     def _scan(self):
-        print("started scan", file=sys.stderr)
         # run in thread
-        for base_dir in _BASE_DIRS:
-            for dirpath, dirnames, filenames in os.walk(base_dir):
+        _logger.debug("%s: started scan", type(self).__name__)
+        for base_dir in self.base_directories:
+            dir = Path(base_dir).expanduser()
+            if not dir.is_dir():
+                continue
+            for dirpath, dirnames, filenames in os.walk(dir):
                 dirnames[:] = [n for n in dirnames if not n.startswith(".") and n not in _IGNORE_LIST]
-                print(dirpath, dirnames, file=sys.stderr)
                 if _PYPROJ in filenames:
                     pyproj_file = Path(dirpath) / _PYPROJ
                     if is_kernel_project(pyproj_file) and has_venv(pyproj_file):
-                        print("Yes")
                         self.queue.put(UvKernel(pyproj_file))
 
     def is_done(self) -> bool:
@@ -106,6 +119,7 @@ class ProjectScanner:
         while not self.queue.empty():
             try:
                 self.kernels.append(self.queue.get_nowait())
+                _logger.info("Found uv = %r", self.kernels[-1])
             except queue.Empty:
                 break
         return self.kernels
@@ -115,10 +129,12 @@ class UvKernelSpecManager(KernelSpecManager):
     """
     """
     use_uv_run = Bool(default_value=True).tag(config=True)
+    base_directories = List[str](default_value=["~"]).tag(config=True)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.__scanner = ProjectScanner()
+        _logger.info("Base directories: %r", self.base_directories)
+        self.__scanner = ProjectScanner(self.base_directories)
 
     def __uv_projects(self) -> list[UvKernel]:
         self.__scanner.start()
@@ -128,31 +144,37 @@ class UvKernelSpecManager(KernelSpecManager):
         ret = super().find_kernel_specs()
         uvs = self.__uv_projects()
         for uv in uvs:
-            print("PROJECT:", uv)
-        for k, v in ret.items():
-            print(k, v)
-        for mock in _MOCK:
-            kernel_name = _PREFIX + str(mock.name)
+            kernel_name = uv.kernel_name()
             ret[kernel_name] = ""
         return ret
 
     def get_all_specs(self) -> dict[str, t.Any]:
-        print("get_all_specs")
         ret = super().get_all_specs()
-        for k, v in ret.items():
-            print(k, v)
         return ret
 
     def get_kernel_spec(self, kernel_name: str) -> KernelSpec:
         if kernel_name.startswith(_PREFIX):
+            uvs = self.__uv_projects()
+            for uv in uvs:
+                if kernel_name == uv.kernel_name():
+                    break
+            else:
+                raise ValueError(f"No such project {kernel_name}")
             props = _BASE_SPEC.copy()
             props.update(
                 name=kernel_name,
-                display_name=_MOCK[0].name
+                display_name=uv.display_name(),
             )
-            props["argv"][0] = str(_MOCK[0] / ".venv/bin/python")
+            argv = props["argv"]
+            if self.use_uv_run:
+                # uv run --directory
+                argv = ["uv", "run", "--directory", str(uv.directory())] + argv
+            else:
+                # ./path/to/python
+                argv[0] = uv.python_path()
+            props["argv"] = argv
             new_spec = KernelSpec(**props)
-            print(new_spec.to_dict())
+            _logger.info("Kernel Spec %r", new_spec.to_dict())
             return new_spec
         else:
             return super().get_kernel_spec(kernel_name)
