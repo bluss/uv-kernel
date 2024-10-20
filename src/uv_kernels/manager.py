@@ -18,6 +18,7 @@ _logger = logging.getLogger(__name__)
 
 _PREFIX = "uv_kernel_"
 _PYPROJ = "pyproject.toml"
+_SAFETY_LIMIT = 50
 
 # ignore directories with '.' prefix and anything in this set
 _IGNORE_LIST = {"node_modules"}
@@ -52,7 +53,14 @@ class UvKernel:
         return "/".join(self.directory().parts[-2:])
 
     def python_path(self) -> str:
-        return str(self.directory() / ".venv/bin/python")
+        return str(get_venv_bin_python(self.directory() / ".venv"))
+
+
+def get_venv_bin_python(base_venv: Path) -> Path:
+    is_windows = os.name == "nt"
+    script_dir = "Scripts" if is_windows else "bin"
+    extension = ".exe" if is_windows else ""
+    return base_venv / script_dir / Path("python").with_suffix(extension)
 
 
 def get_dotkey(data: dict, dotkey, default):
@@ -65,7 +73,11 @@ def get_dotkey(data: dict, dotkey, default):
             return default
     return root
 
+
 def is_kernel_project(pyproject_file: Path) -> bool:
+    """
+    True if has ipykernel
+    """
     _logger.debug("Scanning file %r", pyproject_file)
     try:
         with open(pyproject_file, "rb") as file:
@@ -79,9 +91,10 @@ def is_kernel_project(pyproject_file: Path) -> bool:
         _logger.error("Error when reading %r: %s", pyproject_file, exc)
         return False
 
+
 def has_venv(pyproject_file: Path) -> bool:
-    venv_dir = pyproject_file.parent / ".venv/bin/python"
-    return venv_dir.is_file()
+    venv_python = get_venv_bin_python(pyproject_file.parent / ".venv")
+    return venv_python.is_file()
 
 
 class ProjectScanner:
@@ -127,6 +140,8 @@ class ProjectScanner:
 
 class UvKernelSpecManager(KernelSpecManager):
     """
+    KernelSpecManager that finds installed kernel specs,
+    and also scans for uv projects with ipykernel - in given base directories
     """
     use_uv_run = Bool(default_value=True).tag(config=True)
     base_directories = List[str](default_value=["~"]).tag(config=True)
@@ -138,7 +153,8 @@ class UvKernelSpecManager(KernelSpecManager):
 
     def __uv_projects(self) -> list[UvKernel]:
         self.__scanner.start()
-        return self.__scanner.get()
+        projects = self.__scanner.get()
+        return projects[:_SAFETY_LIMIT]
 
     def find_kernel_specs(self) -> dict[str, str]:
         ret = super().find_kernel_specs()
