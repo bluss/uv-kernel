@@ -1,0 +1,20 @@
+[project]
+name = "uv-kernels"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Ulrik Sverdrup", email = "ulrik.sverdrup@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "ipykernel>=6.29.5",
+    "jupyter-client>=8.6.3",
+]
