@@ -183,10 +183,10 @@ class UvKernelSpecManager(KernelSpecManager):
             )
             argv = props["argv"]
             if self.use_uv_run:
-                # uv run --directory
-                argv = ["uv", "run", "--directory", str(uv.directory())] + argv
+                # uv run --project kernel python ...
+                argv = ["uv", "run", "--project", str(uv.directory())] + argv
             else:
-                # ./path/to/python
+                # ./path/to/python ...
                 argv[0] = uv.python_path()
             props["argv"] = argv
             new_spec = KernelSpec(**props)
