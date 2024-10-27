@@ -143,7 +143,7 @@ class UvKernelSpecManager(KernelSpecManager):
     KernelSpecManager that finds installed kernel specs,
     and also scans for uv projects with ipykernel - in given base directories
     """
-    use_uv_run = Bool(default_value=True).tag(config=True)
+    use_uv_run = Bool(default_value=False).tag(config=True)
     base_directories = List[str](default_value=["~"]).tag(config=True)
 
     def __init__(self, **kwargs):
